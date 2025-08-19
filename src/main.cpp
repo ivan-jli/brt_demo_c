@@ -116,6 +116,7 @@ void setup()
   reg |= 1 << 6;
   // status_t LIS3DHCore::writeRegister(uint8_t offset, uint8_t dataToWrite) {
   g_lis_accel.writeRegister(LIS3DH_INT1_CFG, reg);
+  g_lis_accel.begin();
 
   pinMode(ACCEL_INT_GPIO_PIN, INPUT_PULLUP);
 
@@ -146,28 +147,29 @@ void setup()
 void loop()
 {
   bool hall_isr_flag = false;
-  u32_t accel_isr_count = 0;
+  static u32_t accel_isr_count = 0;
 
   // }
   switch (g_state)
   {
   case GOING_TO_SLEEP:
     g_state = SLEEPING;
+    timerAlarmDisable(g_timer);
     esp_deep_sleep_start();
     break;
   case SLEEPING:
-    delay(100); // to process any interrupts?
     g_state = WAKING;
     break;
   case WAKING:
     Serial.println("Waking up!");
     g_state = RUNNING;
-    portENTER_CRITICAL(&g_timerMux);
+    // portENTER_CRITICAL(&g_timerMux); 
+    //not sure if the timer will need reinitialisation
     g_timer = timerBegin(0, 8000, true); // timer#, divider, count_up
     timerAttachInterrupt(g_timer, &timer_isr, true);
     timerAlarmWrite(g_timer, 10, true);
     timerAlarmEnable(g_timer);
-    portEXIT_CRITICAL(g_timerMux);
+    // portEXIT_CRITICAL(g_timerMux);
     break;
   case RUNNING:
     // Accelerometer
@@ -175,13 +177,13 @@ void loop()
     portENTER_CRITICAL(&g_accelMux);
     if (g_accel_isr_count)
     {
-      g_accel_isr_count--;
-      accel_isr_count++;
+      accel_isr_count = g_accel_isr_count;
+      g_accel_isr_count = 0;
     }
     portEXIT_CRITICAL(&g_accelMux);
     if (accel_isr_count)
     {
-      accel_isr_count--;
+      accel_isr_count = 0; // if interrupt burst occurs, we can count it stil as one
       portENTER_CRITICAL(&g_timerMux);
       g_mv.last_move_ts = millis();
       if (g_mv.counter == 0)
@@ -206,6 +208,7 @@ void loop()
       portENTER_CRITICAL(&g_timerMux);
       if (!g_hall_led_signal.active)
       {
+        // Hall led blink seqeuence start
         g_hall_led_signal.active = true;
         g_hall_led_signal.current_toggle = 0;
         g_hall_led_signal.divider_current_cycle = 0;
@@ -296,17 +299,12 @@ void ARDUINO_ISR_ATTR timer_isr()
     {
       if (g_mv.counter > MOVEMENT_COUNT_THRESHOLD)
       {
-        // fresh movement for longer than 10s
-        // init accel led
+        // Accel led blink seqeuence start
         g_accel_led_signal.active = true;
         g_accel_led_signal.current_toggle = 0;
         g_accel_led_signal.divider_current_cycle = 0;
       }
     }
-  }
-  else
-  {
-    g_accel_led_signal.active = false;
   }
   portEXIT_CRITICAL_ISR(&g_timerMux);
 }
