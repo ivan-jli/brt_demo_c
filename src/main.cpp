@@ -9,12 +9,14 @@
 // Framework: Arduino
 
 // DEFINES
-#define ACCEL_I2C_SCL 3
+#define ACCEL_I2C_SCL 8
 #define ACCEL_I2C_SDA 10
-#define ACCEL_INT_GPIO_PIN 2
-#define HALL_INT_GPIO_PIN 4
-#define ACCEL_LED 10
-#define HALL_LED 11
+// Verify the _INT_ pins with bool esp_sleep_is_valid_wakeup_gpio(gpio_num_t gpio_num)
+// Returns true if a GPIO number is valid for use as wakeup source. 
+#define ACCEL_INT_GPIO_PIN 20
+#define HALL_INT_GPIO_PIN 21
+#define ACCEL_LED 18
+#define HALL_LED 19
 
 // Physical movements
 // how much small movements, reported from the accelerometer, are needed
@@ -74,6 +76,7 @@ void led_signal_init(volatile led_signal_t *ls, u8_t led_gpio, u8_t nbr_blinks, 
 }
 
 // GLOBAL VARIABLES
+// use RTC_DATA_ATTR in order to make a variable persistent after a deep sleep.
 LIS3DH g_lis_accel(I2C_MODE, 0x19);
 static volatile device_state_t g_state;
 static volatile movement_t g_mv;
@@ -81,6 +84,7 @@ static volatile led_signal_t g_accel_led_signal;
 static volatile led_signal_t g_hall_led_signal;
 static volatile bool g_hall_isr_flag = false;
 static volatile u32_t g_accel_isr_count = 0;
+static u8_t g_u8_dummy = 0;
 static hw_timer_t *g_timer = NULL;
 portMUX_TYPE g_timerMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE g_hallMux = portMUX_INITIALIZER_UNLOCKED;
@@ -93,7 +97,8 @@ void setup()
   Serial.begin(115200);
   while (!Serial)
     delay(10);
-  Serial.println("power on");
+  Serial.println("Begin setup()");
+  Serial.println("Serial init ok");
 
   // I2C
   Wire.begin(ACCEL_I2C_SDA, ACCEL_I2C_SCL);
@@ -104,6 +109,7 @@ void setup()
   led_signal_init(&g_hall_led_signal, HALL_LED, 1, 10);
   pinMode(g_hall_led_signal.led_gpio, OUTPUT);
 
+  // Possibly move the accelerometer init part to be executed only after reset and not at wakeup
   // LIS3 accelerometer
   g_lis_accel.settings.accelRange = 4;
   g_lis_accel.settings.accelSampleRate = 10;
@@ -137,11 +143,23 @@ void setup()
 
   // Init variables
   g_mv.counter = 0;
-  g_state = GOING_TO_SLEEP;
 
   // Interrupts
   attachInterrupt(digitalPinToInterrupt(ACCEL_INT_GPIO_PIN), accel_isr, FALLING);
   attachInterrupt(digitalPinToInterrupt(HALL_INT_GPIO_PIN), hall_isr, CHANGE);
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+    {//reset
+      g_state = SLEEPING;
+      break;    
+    }
+    default:
+    //waking up from deep sleep
+      g_state = WAKING;
+      break;    
+  }
 }
 
 void loop()
@@ -155,10 +173,10 @@ void loop()
   case GOING_TO_SLEEP:
     g_state = SLEEPING;
     timerAlarmDisable(g_timer);
-    esp_deep_sleep_start();
     break;
   case SLEEPING:
-    g_state = WAKING;
+    esp_deep_sleep_start();
+    // g_state = WAKING; // at wakeup after a deep sleep, setup() will be executed again.
     break;
   case WAKING:
     Serial.println("Waking up!");
@@ -229,6 +247,8 @@ void loop()
 void ARDUINO_ISR_ATTR accel_isr()
 {
   portENTER_CRITICAL_ISR(&g_accelMux);
+  // read_
+  g_lis_accel.readRegister(&g_u8_dummy, LIS3DH_INT1_SRC);
   g_accel_isr_count++;
   portEXIT_CRITICAL_ISR(&g_accelMux);
 }
